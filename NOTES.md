@@ -43,11 +43,12 @@
 
 ```powershell
 cd "G:\study\homework\Profecional\М7\VPf07"
-# файлы уже лежат в папке; привязываем их к репозиторию (один раз)
+# файлы уже лежат в папке (кроме .claude/ — его в папку писать нельзя); привязываем к репозиторию один раз
 git init
 git remote add origin https://github.com/JaneEva08/VPf07.git
 git fetch origin
-git checkout -B claude/sharp-galileo-yfeici origin/claude/sharp-galileo-yfeici
+git checkout -b claude/sharp-galileo-yfeici
+git reset --hard origin/claude/sharp-galileo-yfeici   # файлы в папке те же; заодно подтянется .claude/
 git status        # должно быть чисто
 python -m venv venv
 .\venv\Scripts\Activate.ps1
