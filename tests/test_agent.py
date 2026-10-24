@@ -80,3 +80,8 @@ def test_missing_key(monkeypatch):
     import pytest
     with pytest.raises(RuntimeError):
         agent_module.Agent()
+
+
+def test_system_prompt_forbids_markdown_and_latex():
+    """Терминал не рендерит разметку: на живом прогоне формула пришла как \\(2^{20} \\div 3\\)."""
+    assert "LaTeX" in agent_module.SYSTEM_PROMPT and "Markdown" in agent_module.SYSTEM_PROMPT
