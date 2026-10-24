@@ -1,0 +1,8 @@
+.env
+venv/
+__pycache__/
+*.pyc
+agent.log
+memory.json
+workspace/*
+!workspace/.gitkeep
