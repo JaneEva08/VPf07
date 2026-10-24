@@ -107,13 +107,18 @@ class Resp:
 
 
 def test_weather(monkeypatch):
+    seen = {}
+
     def fake_get(url, params=None, timeout=None, **kw):
+        if "forecast" in url:
+            seen.update(params)
         if "geocoding" in url:
             return Resp({"results": [{"latitude": 55.7, "longitude": 37.6, "name": "Москва", "country": "Россия"}]})
         return Resp({"current_weather": {"temperature": 7, "windspeed": 8, "weathercode": 53, "time": "2026-10-24T12:00"}})
     monkeypatch.setattr(tools.requests, "get", fake_get)
     out = tools.get_weather("Москва")
     assert "Москва" in out and "7°C" in out and "морось" in out
+    assert seen["timezone"] == "auto"      # регресс: без него время приходило в UTC
 
 
 def test_weather_unknown_city(monkeypatch):

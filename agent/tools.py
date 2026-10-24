@@ -257,7 +257,8 @@ def geocode_city(city: str) -> tuple[float, float, str]:
 def get_weather(city: str) -> str:
     lat, lon, label = geocode_city(city)
     r = requests.get("https://api.open-meteo.com/v1/forecast",
-                     params={"latitude": lat, "longitude": lon, "current_weather": "true"},
+                     params={"latitude": lat, "longitude": lon, "current_weather": "true",
+                             "timezone": "auto"},   # иначе время приходит в UTC
                      timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     w = r.json()["current_weather"]
