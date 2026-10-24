@@ -8,7 +8,7 @@
 | `web_search` | поиск в интернете (DuckDuckGo, пакет `ddgs`) |
 | `http_get` / `http_post` | запросы к внешним API; только http(s), локальные и частные адреса закрыты, переадресации не выполняются |
 | `file_read` / `file_write` / `file_list` | файлы, только внутри `workspace/` |
-| `run_command` | команды из белого списка (ls, pwd, date, cat, head, tail, wc, echo), без shell; пути в аргументах — только внутри `workspace/` |
+| `run_command` | команды из белого списка (ls, pwd, date, whoami, cat, head, tail, wc, echo, python --version) выполняются средствами Python, без запуска процессов и shell; пути в аргументах — только внутри `workspace/` |
 | `get_weather` | текущая погода по названию города (Open-Meteo: геокодинг + прогноз) |
 | `get_crypto_price` | курс криптовалюты (CoinGecko) |
 | `get_fiat_rate` | **свой #1:** курс/конвертация обычных валют (USD/EUR/RUB…) |

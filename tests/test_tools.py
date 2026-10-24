@@ -34,6 +34,30 @@ def test_run_command_whitelist_and_python():
     assert "Менять системное время" in tools.run_command("date -s 2000-01-01")
 
 
+def test_run_command_does_not_spawn_processes(monkeypatch):
+    """Регресс: cat/wc/echo не существуют как программы в Windows — команды выполняются средствами Python."""
+    import subprocess
+
+    def boom(*a, **k):
+        raise AssertionError("процесс запускать нельзя")
+    monkeypatch.setattr(subprocess, "run", boom)
+    monkeypatch.setattr(subprocess, "Popen", boom)
+    tools.file_write("a.txt", "one\ntwo\nthree\n")
+    for cmd in ("ls", "pwd", "date", "whoami", "cat a.txt", "wc a.txt", "head -n 1 a.txt", "tail -n 1 a.txt",
+                "python --version", "echo hi"):
+        assert tools.run_command(cmd)
+
+
+def test_run_command_head_tail_ls_date():
+    tools.file_write("a.txt", "one\ntwo\nthree\n")
+    assert tools.run_command("head -n 2 a.txt") == "one\ntwo"
+    assert tools.run_command("tail -n 1 a.txt") == "three"
+    assert tools.run_command("wc -w a.txt") == "3 a.txt"
+    assert tools.run_command("ls") == "a.txt"
+    assert len(tools.run_command("date +%Y")) == 4
+    assert "не найден" in tools.call_tool("run_command", {"command": "cat nope.txt"})
+
+
 def test_run_command_works_inside_workspace():
     tools.file_write("a.txt", "one\ntwo\n")
     assert tools.run_command("cat a.txt") == "one\ntwo"

@@ -1,12 +1,14 @@
 """Инструменты агента и их описания (JSON-схемы для function calling)."""
 import ast
+import getpass
 import ipaddress
 import json
 import logging
 import operator
 import shlex
+import platform
 import socket
-import subprocess
+from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -119,15 +121,96 @@ def _check_command_args(parts: list[str]) -> str | None:
     return None
 
 
+def _flags_and_args(args: list[str]) -> tuple[list[str], list[str]]:
+    return [a for a in args if a.startswith("-")], [a for a in args if not a.startswith("-")]
+
+
+def _read(name: str) -> str:
+    path = _safe_path(name)
+    if not path.is_file():
+        raise FileNotFoundError(f"Файл не найден: {name}")
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _lines_count(args: list[str], default: int = 10) -> tuple[int, list[str]]:
+    """Разбор `-n N` для head/tail; возвращает (N, остальные аргументы)."""
+    rest, n, i = [], default, 0
+    while i < len(args):
+        if args[i] == "-n" and i + 1 < len(args):
+            n, i = int(args[i + 1]), i + 2
+        elif args[i].startswith("-n") and args[i][2:].isdigit():
+            n, i = int(args[i][2:]), i + 1
+        else:
+            rest.append(args[i])
+            i += 1
+    return max(n, 0), rest
+
+
+def _head_tail(args, head: bool) -> str:
+    n, rest = _lines_count(args)
+    chunks = []
+    for name in (r for r in rest if not r.startswith("-")):
+        lines = _read(name).splitlines()
+        chunks.append("\n".join(lines[:n] if head else (lines[-n:] if n else [])))
+    return "\n".join(chunks)
+
+
+def _ls(args):
+    _, paths = _flags_and_args(args)
+    out = []
+    for name in paths or ["."]:
+        target = _safe_path(name)
+        if target.is_dir():
+            out += sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir() if p.name != ".gitkeep")
+        elif target.exists():
+            out.append(name)
+        else:
+            raise FileNotFoundError(f"Не найдено: {name}")
+    return "\n".join(out)
+
+
+def _wc(args):
+    flags, names = _flags_and_args(args)
+    rows = []
+    for name in names:
+        text = _read(name)
+        counts = {"-l": text.count("\n"), "-w": len(text.split()), "-c": len(text.encode("utf-8"))}
+        chosen = [counts[f] for f in ("-l", "-w", "-c") if f in flags] or list(counts.values())
+        rows.append(" ".join(str(c) for c in chosen) + f" {name}")
+    return "\n".join(rows)
+
+
+def _date(args):
+    now = datetime.now()
+    fmt = next((a[1:] for a in args if a.startswith("+")), None)
+    return now.strftime(fmt) if fmt else now.isoformat(timespec="seconds")
+
+
+COMMANDS = {
+    "pwd": lambda a: "workspace/",
+    "ls": _ls,
+    "date": _date,
+    "whoami": lambda a: getpass.getuser(),
+    "echo": lambda a: " ".join(x for x in a if x != "-n"),
+    "cat": lambda a: "\n".join(_read(n) for n in _flags_and_args(a)[1]),
+    "head": lambda a: _head_tail(a, head=True),
+    "tail": lambda a: _head_tail(a, head=False),
+    "wc": _wc,
+    "python": lambda a: "Python " + platform.python_version(),
+    "python3": lambda a: "Python " + platform.python_version(),
+}
+
+
 def run_command(command: str) -> str:
+    """Команды из белого списка выполняются средствами Python, без запуска процессов
+    и без shell: одинаково работает в Windows и Linux, наружу из workspace/ не выйти."""
     parts = shlex.split(command)
     if not parts or parts[0] not in ALLOWED_COMMANDS:
         return f"Команда запрещена. Разрешены: {', '.join(sorted(ALLOWED_COMMANDS))}"
     refusal = _check_command_args(parts)
     if refusal:
         return refusal
-    proc = subprocess.run(parts, cwd=WORKSPACE, capture_output=True, text=True, timeout=10)
-    return _clip((proc.stdout + proc.stderr).strip() or "(пустой вывод)")
+    return _clip(COMMANDS[parts[0]](parts[1:]).strip() or "(пустой вывод)")
 
 
 # ---------- 5. Память ----------
