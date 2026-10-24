@@ -47,5 +47,8 @@ agent/provider.py клиент и модель из переменных окр�
 agent/tools.py   инструменты и их JSON-схемы
 run.py           запуск из терминала
 tests/           pytest, без сети
+results/         сырые результаты живого прогона (лог вызовов, memory.json, файлы агента)
+docs/screenshots скриншоты прогона
+HOMEWORK.md      отчёт для куратора
 workspace/       песочница для файлов агента (содержимое не в git)
 ```
