@@ -44,7 +44,7 @@
 cd "G:\study\homework\Profecional\М7\VPf07"
 # файлы уже лежат в папке (кроме .claude/ — его в папку писать нельзя); привязываем к репозиторию один раз
 git init
-git remote add origin https://github.com/JaneEva08/VPf07.git
+git remote add origin https://github.com/JaneEva08/ai-agent-tools.git
 git fetch origin
 git checkout -b claude/sharp-galileo-yfeici
 git reset --hard origin/claude/sharp-galileo-yfeici   # файлы в папке те же; заодно подтянется .claude/
