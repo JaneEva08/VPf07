@@ -6,3 +6,6 @@ agent.log
 memory.json
 workspace/*
 !workspace/.gitkeep
+
+*.pdf
+.pytest_cache/

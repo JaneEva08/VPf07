@@ -1,11 +1,14 @@
 """Инструменты агента и их описания (JSON-схемы для function calling)."""
 import ast
+import ipaddress
 import json
 import logging
 import operator
 import shlex
+import socket
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 
@@ -42,14 +45,33 @@ def web_search(query: str, max_results: int = 5) -> str:
 
 
 # ---------- 2. HTTP-запросы ----------
+def _check_url(url: str) -> None:
+    """Только http(s) и только внешние адреса: localhost, частные сети и метаданные облака закрыты."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Разрешены только http:// и https:// адреса")
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, parsed.port or 443)
+    except socket.gaierror as exc:
+        raise ValueError(f"Не удалось определить адрес {parsed.hostname}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise ValueError("Запросы к локальным и частным адресам запрещены")
+
+
 def http_get(url: str) -> str:
-    r = requests.get(url, timeout=HTTP_TIMEOUT)
-    return _clip(f"HTTP {r.status_code}\n{r.text}")
+    _check_url(url)
+    r = requests.get(url, timeout=HTTP_TIMEOUT, allow_redirects=False)
+    extra = f"\nПереадресация: {r.headers.get('Location')}" if r.is_redirect else ""
+    return _clip(f"HTTP {r.status_code}{extra}\n{r.text}")
 
 
 def http_post(url: str, json_body: dict | None = None) -> str:
-    r = requests.post(url, json=json_body, timeout=HTTP_TIMEOUT)
-    return _clip(f"HTTP {r.status_code}\n{r.text}")
+    _check_url(url)
+    r = requests.post(url, json=json_body, timeout=HTTP_TIMEOUT, allow_redirects=False)
+    extra = f"\nПереадресация: {r.headers.get('Location')}" if r.is_redirect else ""
+    return _clip(f"HTTP {r.status_code}{extra}\n{r.text}")
 
 
 # ---------- 3. Файлы ----------
@@ -70,18 +92,40 @@ def file_list() -> str:
     return "\n".join(files) or "workspace/ пуста"
 
 
-# ---------- 4. Терминал (белый список, без shell) ----------
+# ---------- 4. Терминал (белый список, без shell, только внутри workspace/) ----------
 ALLOWED_COMMANDS = {"ls", "pwd", "date", "whoami", "echo", "cat", "head", "tail",
                     "wc", "python", "python3"}
 ALLOWED_PY_ARGS = {"--version", "-V"}
+
+
+def _check_command_args(parts: list[str]) -> str | None:
+    """Возвращает текст отказа или None. Путь в аргументах — только внутри workspace/."""
+    cmd, args = parts[0], parts[1:]
+    if cmd.startswith("python"):
+        return None if set(args) <= ALLOWED_PY_ARGS else "python разрешён только с --version"
+    if cmd == "date" and any(a.startswith(("-s", "--set")) for a in args):
+        return "Менять системное время запрещено"
+    for arg in args:
+        if arg.startswith("-"):
+            if "/" in arg or ".." in arg:          # --files0-from=/etc/passwd и подобное
+                return "Пути в параметрах запрещены"
+            continue
+        if cmd in {"echo", "date"}:                # текст и формат даты — не пути
+            continue
+        try:
+            _safe_path(arg)
+        except ValueError:
+            return "Доступ разрешён только к папке workspace/"
+    return None
 
 
 def run_command(command: str) -> str:
     parts = shlex.split(command)
     if not parts or parts[0] not in ALLOWED_COMMANDS:
         return f"Команда запрещена. Разрешены: {', '.join(sorted(ALLOWED_COMMANDS))}"
-    if parts[0].startswith("python") and not set(parts[1:]) <= ALLOWED_PY_ARGS:
-        return "python разрешён только с --version"
+    refusal = _check_command_args(parts)
+    if refusal:
+        return refusal
     proc = subprocess.run(parts, cwd=WORKSPACE, capture_output=True, text=True, timeout=10)
     return _clip((proc.stdout + proc.stderr).strip() or "(пустой вывод)")
 
@@ -108,9 +152,12 @@ def save_note(note: str) -> str:
 
 # ---------- Погода ----------
 WEATHER_CODES = {0: "ясно", 1: "преимущественно ясно", 2: "переменная облачность", 3: "пасмурно",
-                 45: "туман", 48: "изморозь", 51: "морось", 61: "небольшой дождь", 63: "дождь",
-                 65: "сильный дождь", 71: "небольшой снег", 73: "снег", 75: "сильный снег",
-                 80: "ливень", 95: "гроза"}
+                 45: "туман", 48: "изморозь", 51: "слабая морось", 53: "морось", 55: "сильная морось",
+                 56: "ледяная морось", 57: "сильная ледяная морось", 61: "небольшой дождь",
+                 63: "дождь", 65: "сильный дождь", 66: "ледяной дождь", 67: "сильный ледяной дождь",
+                 71: "небольшой снег", 73: "снег", 75: "сильный снег", 77: "снежные зёрна",
+                 80: "небольшой ливень", 81: "ливень", 82: "сильный ливень", 85: "снегопад",
+                 86: "сильный снегопад", 95: "гроза", 96: "гроза с градом", 99: "сильная гроза с градом"}
 
 
 def geocode_city(city: str) -> tuple[float, float, str]:
