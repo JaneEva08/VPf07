@@ -42,10 +42,13 @@
 ## Сделать локально
 
 ```powershell
-cd G:\study\homework\Profecional\М7
-git clone https://github.com/JaneEva08/VPf07
-cd VPf07
-git checkout claude/sharp-galileo-yfeici
+cd "G:\study\homework\Profecional\М7\VPf07"
+# файлы уже лежат в папке; привязываем их к репозиторию (один раз)
+git init
+git remote add origin https://github.com/JaneEva08/VPf07.git
+git fetch origin
+git checkout -B claude/sharp-galileo-yfeici origin/claude/sharp-galileo-yfeici
+git status        # должно быть чисто
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt -r requirements-dev.txt
