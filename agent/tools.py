@@ -1,11 +1,16 @@
 """Инструменты агента и их описания (JSON-схемы для function calling)."""
 import ast
+import getpass
+import ipaddress
 import json
 import logging
 import operator
 import shlex
-import subprocess
+import platform
+import socket
+from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 
@@ -42,14 +47,33 @@ def web_search(query: str, max_results: int = 5) -> str:
 
 
 # ---------- 2. HTTP-запросы ----------
+def _check_url(url: str) -> None:
+    """Только http(s) и только внешние адреса: localhost, частные сети и метаданные облака закрыты."""
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("Разрешены только http:// и https:// адреса")
+    try:
+        infos = socket.getaddrinfo(parsed.hostname, parsed.port or 443)
+    except socket.gaierror as exc:
+        raise ValueError(f"Не удалось определить адрес {parsed.hostname}") from exc
+    for info in infos:
+        ip = ipaddress.ip_address(info[4][0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise ValueError("Запросы к локальным и частным адресам запрещены")
+
+
 def http_get(url: str) -> str:
-    r = requests.get(url, timeout=HTTP_TIMEOUT)
-    return _clip(f"HTTP {r.status_code}\n{r.text}")
+    _check_url(url)
+    r = requests.get(url, timeout=HTTP_TIMEOUT, allow_redirects=False)
+    extra = f"\nПереадресация: {r.headers.get('Location')}" if r.is_redirect else ""
+    return _clip(f"HTTP {r.status_code}{extra}\n{r.text}")
 
 
 def http_post(url: str, json_body: dict | None = None) -> str:
-    r = requests.post(url, json=json_body, timeout=HTTP_TIMEOUT)
-    return _clip(f"HTTP {r.status_code}\n{r.text}")
+    _check_url(url)
+    r = requests.post(url, json=json_body, timeout=HTTP_TIMEOUT, allow_redirects=False)
+    extra = f"\nПереадресация: {r.headers.get('Location')}" if r.is_redirect else ""
+    return _clip(f"HTTP {r.status_code}{extra}\n{r.text}")
 
 
 # ---------- 3. Файлы ----------
@@ -70,20 +94,123 @@ def file_list() -> str:
     return "\n".join(files) or "workspace/ пуста"
 
 
-# ---------- 4. Терминал (белый список, без shell) ----------
+# ---------- 4. Терминал (белый список, без shell, только внутри workspace/) ----------
 ALLOWED_COMMANDS = {"ls", "pwd", "date", "whoami", "echo", "cat", "head", "tail",
                     "wc", "python", "python3"}
 ALLOWED_PY_ARGS = {"--version", "-V"}
 
 
+def _check_command_args(parts: list[str]) -> str | None:
+    """Возвращает текст отказа или None. Путь в аргументах — только внутри workspace/."""
+    cmd, args = parts[0], parts[1:]
+    if cmd.startswith("python"):
+        return None if set(args) <= ALLOWED_PY_ARGS else "python разрешён только с --version"
+    if cmd == "date" and any(a.startswith(("-s", "--set")) for a in args):
+        return "Менять системное время запрещено"
+    for arg in args:
+        if arg.startswith("-"):
+            if "/" in arg or ".." in arg:          # --files0-from=/etc/passwd и подобное
+                return "Пути в параметрах запрещены"
+            continue
+        if cmd in {"echo", "date"}:                # текст и формат даты — не пути
+            continue
+        try:
+            _safe_path(arg)
+        except ValueError:
+            return "Доступ разрешён только к папке workspace/"
+    return None
+
+
+def _flags_and_args(args: list[str]) -> tuple[list[str], list[str]]:
+    return [a for a in args if a.startswith("-")], [a for a in args if not a.startswith("-")]
+
+
+def _read(name: str) -> str:
+    path = _safe_path(name)
+    if not path.is_file():
+        raise FileNotFoundError(f"Файл не найден: {name}")
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _lines_count(args: list[str], default: int = 10) -> tuple[int, list[str]]:
+    """Разбор `-n N` для head/tail; возвращает (N, остальные аргументы)."""
+    rest, n, i = [], default, 0
+    while i < len(args):
+        if args[i] == "-n" and i + 1 < len(args):
+            n, i = int(args[i + 1]), i + 2
+        elif args[i].startswith("-n") and args[i][2:].isdigit():
+            n, i = int(args[i][2:]), i + 1
+        else:
+            rest.append(args[i])
+            i += 1
+    return max(n, 0), rest
+
+
+def _head_tail(args, head: bool) -> str:
+    n, rest = _lines_count(args)
+    chunks = []
+    for name in (r for r in rest if not r.startswith("-")):
+        lines = _read(name).splitlines()
+        chunks.append("\n".join(lines[:n] if head else (lines[-n:] if n else [])))
+    return "\n".join(chunks)
+
+
+def _ls(args):
+    _, paths = _flags_and_args(args)
+    out = []
+    for name in paths or ["."]:
+        target = _safe_path(name)
+        if target.is_dir():
+            out += sorted(p.name + ("/" if p.is_dir() else "") for p in target.iterdir() if p.name != ".gitkeep")
+        elif target.exists():
+            out.append(name)
+        else:
+            raise FileNotFoundError(f"Не найдено: {name}")
+    return "\n".join(out)
+
+
+def _wc(args):
+    flags, names = _flags_and_args(args)
+    rows = []
+    for name in names:
+        text = _read(name)
+        counts = {"-l": text.count("\n"), "-w": len(text.split()), "-c": len(text.encode("utf-8"))}
+        chosen = [counts[f] for f in ("-l", "-w", "-c") if f in flags] or list(counts.values())
+        rows.append(" ".join(str(c) for c in chosen) + f" {name}")
+    return "\n".join(rows)
+
+
+def _date(args):
+    now = datetime.now()
+    fmt = next((a[1:] for a in args if a.startswith("+")), None)
+    return now.strftime(fmt) if fmt else now.isoformat(timespec="seconds")
+
+
+COMMANDS = {
+    "pwd": lambda a: "workspace/",
+    "ls": _ls,
+    "date": _date,
+    "whoami": lambda a: getpass.getuser(),
+    "echo": lambda a: " ".join(x for x in a if x != "-n"),
+    "cat": lambda a: "\n".join(_read(n) for n in _flags_and_args(a)[1]),
+    "head": lambda a: _head_tail(a, head=True),
+    "tail": lambda a: _head_tail(a, head=False),
+    "wc": _wc,
+    "python": lambda a: "Python " + platform.python_version(),
+    "python3": lambda a: "Python " + platform.python_version(),
+}
+
+
 def run_command(command: str) -> str:
+    """Команды из белого списка выполняются средствами Python, без запуска процессов
+    и без shell: одинаково работает в Windows и Linux, наружу из workspace/ не выйти."""
     parts = shlex.split(command)
     if not parts or parts[0] not in ALLOWED_COMMANDS:
         return f"Команда запрещена. Разрешены: {', '.join(sorted(ALLOWED_COMMANDS))}"
-    if parts[0].startswith("python") and not set(parts[1:]) <= ALLOWED_PY_ARGS:
-        return "python разрешён только с --version"
-    proc = subprocess.run(parts, cwd=WORKSPACE, capture_output=True, text=True, timeout=10)
-    return _clip((proc.stdout + proc.stderr).strip() or "(пустой вывод)")
+    refusal = _check_command_args(parts)
+    if refusal:
+        return refusal
+    return _clip(COMMANDS[parts[0]](parts[1:]).strip() or "(пустой вывод)")
 
 
 # ---------- 5. Память ----------
@@ -108,9 +235,12 @@ def save_note(note: str) -> str:
 
 # ---------- Погода ----------
 WEATHER_CODES = {0: "ясно", 1: "преимущественно ясно", 2: "переменная облачность", 3: "пасмурно",
-                 45: "туман", 48: "изморозь", 51: "морось", 61: "небольшой дождь", 63: "дождь",
-                 65: "сильный дождь", 71: "небольшой снег", 73: "снег", 75: "сильный снег",
-                 80: "ливень", 95: "гроза"}
+                 45: "туман", 48: "изморозь", 51: "слабая морось", 53: "морось", 55: "сильная морось",
+                 56: "ледяная морось", 57: "сильная ледяная морось", 61: "небольшой дождь",
+                 63: "дождь", 65: "сильный дождь", 66: "ледяной дождь", 67: "сильный ледяной дождь",
+                 71: "небольшой снег", 73: "снег", 75: "сильный снег", 77: "снежные зёрна",
+                 80: "небольшой ливень", 81: "ливень", 82: "сильный ливень", 85: "снегопад",
+                 86: "сильный снегопад", 95: "гроза", 96: "гроза с градом", 99: "сильная гроза с градом"}
 
 
 def geocode_city(city: str) -> tuple[float, float, str]:
@@ -127,7 +257,8 @@ def geocode_city(city: str) -> tuple[float, float, str]:
 def get_weather(city: str) -> str:
     lat, lon, label = geocode_city(city)
     r = requests.get("https://api.open-meteo.com/v1/forecast",
-                     params={"latitude": lat, "longitude": lon, "current_weather": "true"},
+                     params={"latitude": lat, "longitude": lon, "current_weather": "true",
+                             "timezone": "auto"},   # иначе время приходит в UTC
                      timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     w = r.json()["current_weather"]
